@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:location/location.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -54,18 +55,14 @@ class _PanicScreenState extends State<PanicScreen> {
         return;
       }
 
-      // Create alert document
+      // Firestore alert
       DocumentReference alertDoc =
-          await FirebaseFirestore.instance.collection('panic_alerts').add({
+      await FirebaseFirestore.instance.collection('panic_alerts').add({
         'userId': user.uid,
         'alertActive': true,
         'timestamp': FieldValue.serverTimestamp(),
         'location': coordinates ??
-            {
-              'latitude': 0.0,
-              'longitude': 0.0,
-              'error': true, // consistent typing: bool flag
-            },
+            {'latitude': 0.0, 'longitude': 0.0, 'error': true},
         'userInfo': {
           'name': userProfile['name'] ?? 'Unknown',
           'nationality': userProfile['nationality'] ?? 'Unknown',
@@ -76,8 +73,26 @@ class _PanicScreenState extends State<PanicScreen> {
         },
         'message': 'A user has used the panic button',
         'alertType': 'panic',
-        'status': 'pending', // pending, acknowledged, resolved
+        'status': 'pending',
         'adminResponse': null,
+      });
+
+      // Realtime Database alert
+      DatabaseReference dbRef =
+      FirebaseDatabase.instance.ref('panic_alerts/${user.uid}');
+      await dbRef.set({
+        'userId': user.uid,
+        'alertActive': true,
+        'timestamp': ServerValue.timestamp,
+        'message': 'A user has used the panic button'
+      });
+
+      // Log to Firestore panic_logs
+      await FirebaseFirestore.instance.collection('panic_logs').add({
+        'userId': user.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+        'triggered': true,
+        'alertId': alertDoc.id,
       });
 
       setState(() {
@@ -85,14 +100,6 @@ class _PanicScreenState extends State<PanicScreen> {
         _alertSent = true;
         _activeAlertId = alertDoc.id;
         _statusMessage = 'Emergency alert sent successfully!';
-      });
-
-      // Also log to panic_logs
-      await FirebaseFirestore.instance.collection('panic_logs').add({
-        'userId': user.uid,
-        'timestamp': FieldValue.serverTimestamp(),
-        'triggered': true,
-        'alertId': alertDoc.id,
       });
     } catch (e) {
       setState(() {
@@ -113,8 +120,7 @@ class _PanicScreenState extends State<PanicScreen> {
         if (!serviceEnabled) return null;
       }
 
-      PermissionStatus permissionGranted =
-          await _locationService.hasPermission();
+      PermissionStatus permissionGranted = await _locationService.hasPermission();
       if (permissionGranted == PermissionStatus.denied) {
         permissionGranted = await _locationService.requestPermission();
         if (permissionGranted != PermissionStatus.granted) return null;
@@ -134,7 +140,7 @@ class _PanicScreenState extends State<PanicScreen> {
   Future<Map<String, dynamic>?> _getUserProfile(String userId) async {
     try {
       DocumentSnapshot userDoc =
-          await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      await FirebaseFirestore.instance.collection('users').doc(userId).get();
 
       if (userDoc.exists) {
         return userDoc.data() as Map<String, dynamic>?;
@@ -156,7 +162,7 @@ class _PanicScreenState extends State<PanicScreen> {
     } catch (e) {
       setState(() {
         _statusMessage =
-            'All emergency methods failed. Please call 112 manually.';
+        'All emergency methods failed. Please call 112 manually.';
       });
     }
   }
@@ -167,6 +173,7 @@ class _PanicScreenState extends State<PanicScreen> {
     setState(() => _isLoading = true);
 
     try {
+      // Cancel in Firestore
       await FirebaseFirestore.instance
           .collection('panic_alerts')
           .doc(_activeAlertId)
@@ -176,6 +183,14 @@ class _PanicScreenState extends State<PanicScreen> {
         'cancelledAt': FieldValue.serverTimestamp(),
         'cancelledBy': 'user',
       });
+
+      // Cancel in Realtime Database
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await FirebaseDatabase.instance
+            .ref('panic_alerts/${user.uid}')
+            .update({'alertActive': false, 'status': 'cancelled'});
+      }
 
       setState(() {
         _isLoading = false;
@@ -220,7 +235,6 @@ class _PanicScreenState extends State<PanicScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Status icon
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
@@ -238,18 +252,16 @@ class _PanicScreenState extends State<PanicScreen> {
                 ),
                 child: _isLoading
                     ? const CircularProgressIndicator(
-                        color: Colors.red,
-                        strokeWidth: 3,
-                      )
+                  color: Colors.red,
+                  strokeWidth: 3,
+                )
                     : Icon(
-                        _alertSent ? Icons.check_circle : Icons.warning,
-                        size: 100,
-                        color: _alertSent ? Colors.green : Colors.red,
-                      ),
+                  _alertSent ? Icons.check_circle : Icons.warning,
+                  size: 100,
+                  color: _alertSent ? Colors.green : Colors.red,
+                ),
               ),
               const SizedBox(height: 30),
-
-              // Title
               Text(
                 _alertSent ? 'EMERGENCY ALERT SENT' : 'EMERGENCY ALERT',
                 style: TextStyle(
@@ -260,8 +272,6 @@ class _PanicScreenState extends State<PanicScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
-
-              // Status message
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 40),
                 child: Text(
@@ -273,8 +283,6 @@ class _PanicScreenState extends State<PanicScreen> {
                 ),
               ),
               const SizedBox(height: 30),
-
-              // When alert sent
               if (_alertSent) ...[
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
@@ -314,9 +322,7 @@ class _PanicScreenState extends State<PanicScreen> {
                     ),
                   ),
                 ),
-              ]
-              // When preparing alert
-              else if (!_isLoading) ...[
+              ] else if (!_isLoading) ...[
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
                   padding: const EdgeInsets.all(16),
