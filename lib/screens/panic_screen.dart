@@ -1,4 +1,3 @@
-// lib/screens/panic_screen.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -42,11 +41,11 @@ class _PanicScreenState extends State<PanicScreen> {
 
     try {
       // Get current location
-      Map<String, double>? coordinates = await _getCurrentLocation();
-      
+      Map<String, dynamic>? coordinates = await _getCurrentLocation();
+
       // Get user profile data
       Map<String, dynamic>? userProfile = await _getUserProfile(user.uid);
-      
+
       if (userProfile == null) {
         setState(() {
           _isLoading = false;
@@ -56,17 +55,17 @@ class _PanicScreenState extends State<PanicScreen> {
       }
 
       // Create alert document
-      DocumentReference alertDoc = await FirebaseFirestore.instance
-          .collection('panic_alerts')
-          .add({
+      DocumentReference alertDoc =
+          await FirebaseFirestore.instance.collection('panic_alerts').add({
         'userId': user.uid,
         'alertActive': true,
         'timestamp': FieldValue.serverTimestamp(),
-        'location': coordinates ?? {
-          'latitude': 0.0,
-          'longitude': 0.0,
-          'error': 'Location unavailable'
-        },
+        'location': coordinates ??
+            {
+              'latitude': 0.0,
+              'longitude': 0.0,
+              'error': true, // consistent typing: bool flag
+            },
         'userInfo': {
           'name': userProfile['name'] ?? 'Unknown',
           'nationality': userProfile['nationality'] ?? 'Unknown',
@@ -88,37 +87,34 @@ class _PanicScreenState extends State<PanicScreen> {
         _statusMessage = 'Emergency alert sent successfully!';
       });
 
-      // Also log to panic_logs for backward compatibility
+      // Also log to panic_logs
       await FirebaseFirestore.instance.collection('panic_logs').add({
         'userId': user.uid,
         'timestamp': FieldValue.serverTimestamp(),
         'triggered': true,
         'alertId': alertDoc.id,
       });
-
     } catch (e) {
       setState(() {
         _isLoading = false;
         _statusMessage = 'Error sending alert: ${e.toString()}';
       });
-      
+
       // Fallback to phone call
       _fallbackToPhoneCall();
     }
   }
 
-  Future<Map<String, double>?> _getCurrentLocation() async {
+  Future<Map<String, dynamic>?> _getCurrentLocation() async {
     try {
-      bool serviceEnabled;
-      PermissionStatus permissionGranted;
-
-      serviceEnabled = await _locationService.serviceEnabled();
+      bool serviceEnabled = await _locationService.serviceEnabled();
       if (!serviceEnabled) {
         serviceEnabled = await _locationService.requestService();
         if (!serviceEnabled) return null;
       }
 
-      permissionGranted = await _locationService.hasPermission();
+      PermissionStatus permissionGranted =
+          await _locationService.hasPermission();
       if (permissionGranted == PermissionStatus.denied) {
         permissionGranted = await _locationService.requestPermission();
         if (permissionGranted != PermissionStatus.granted) return null;
@@ -130,24 +126,22 @@ class _PanicScreenState extends State<PanicScreen> {
         'longitude': locationData.longitude ?? 0.0,
       };
     } catch (e) {
-      print('Location error: $e');
+      debugPrint('Location error: $e');
       return null;
     }
   }
 
   Future<Map<String, dynamic>?> _getUserProfile(String userId) async {
     try {
-      DocumentSnapshot userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .get();
-      
+      DocumentSnapshot userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(userId).get();
+
       if (userDoc.exists) {
         return userDoc.data() as Map<String, dynamic>?;
       }
       return null;
     } catch (e) {
-      print('Profile fetch error: $e');
+      debugPrint('Profile fetch error: $e');
       return null;
     }
   }
@@ -161,7 +155,8 @@ class _PanicScreenState extends State<PanicScreen> {
       });
     } catch (e) {
       setState(() {
-        _statusMessage = 'All emergency methods failed. Please call 112 manually.';
+        _statusMessage =
+            'All emergency methods failed. Please call 112 manually.';
       });
     }
   }
@@ -188,11 +183,9 @@ class _PanicScreenState extends State<PanicScreen> {
         _statusMessage = 'Alert cancelled successfully';
       });
 
-      // Navigate back after a delay
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) Navigator.pop(context);
       });
-
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -203,13 +196,15 @@ class _PanicScreenState extends State<PanicScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final red700 = Colors.red.shade700;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'Emergency Alert',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        backgroundColor: Colors.red[700],
+        backgroundColor: red700,
         foregroundColor: Colors.white,
         elevation: 5,
       ),
@@ -218,13 +213,14 @@ class _PanicScreenState extends State<PanicScreen> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Colors.red[50]!, Colors.white],
+            colors: [Colors.red.shade50, Colors.white],
           ),
         ),
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // Status icon
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
@@ -232,7 +228,7 @@ class _PanicScreenState extends State<PanicScreen> {
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
-                      color: _alertSent 
+                      color: _alertSent
                           ? Colors.green.withOpacity(0.3)
                           : Colors.red.withOpacity(0.3),
                       blurRadius: 15,
@@ -252,6 +248,8 @@ class _PanicScreenState extends State<PanicScreen> {
                       ),
               ),
               const SizedBox(height: 30),
+
+              // Title
               Text(
                 _alertSent ? 'EMERGENCY ALERT SENT' : 'EMERGENCY ALERT',
                 style: TextStyle(
@@ -262,6 +260,8 @@ class _PanicScreenState extends State<PanicScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
+
+              // Status message
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 40),
                 child: Text(
@@ -273,12 +273,14 @@ class _PanicScreenState extends State<PanicScreen> {
                 ),
               ),
               const SizedBox(height: 30),
+
+              // When alert sent
               if (_alertSent) ...[
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Colors.green[50],
+                    color: Colors.green.shade50,
                     borderRadius: BorderRadius.circular(15),
                     border: Border.all(color: Colors.green.withOpacity(0.2)),
                   ),
@@ -312,12 +314,14 @@ class _PanicScreenState extends State<PanicScreen> {
                     ),
                   ),
                 ),
-              ] else if (!_isLoading) ...[
+              ]
+              // When preparing alert
+              else if (!_isLoading) ...[
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 40),
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Colors.red[50],
+                    color: Colors.red.shade50,
                     borderRadius: BorderRadius.circular(15),
                     border: Border.all(color: Colors.red.withOpacity(0.2)),
                   ),
