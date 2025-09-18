@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'panic_screen.dart';
 import 'profile_screen.dart';
 
@@ -18,16 +20,19 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   double safetyScore = 85.0;
   String alertStatus = 'Safe';
+  bool _isPanicActive = false;
   final Random random = Random();
   Timer? _timer;
   LatLng? currentLocation;
   final Location _locationService = Location();
   final MapController _mapController = MapController();
   bool _isLoading = true;
+  StreamSubscription<DatabaseEvent>? _panicListener;
 
   @override
   void initState() {
     super.initState();
+    _checkPanicStatus();
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
       setState(() {
         safetyScore = (70 + random.nextDouble() * 30).clamp(0.0, 100.0);
@@ -39,6 +44,98 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     });
     _getLocation();
+  }
+
+  Future<void> _checkPanicStatus() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      print('No authenticated user found');
+      return;
+    }
+
+    print('Checking panic status for user: ${user.uid}');
+
+    // Initial check
+    try {
+      final snapshot = await FirebaseDatabase.instance
+          .ref('panic_alerts/${user.uid}')
+          .get();
+
+      print('Snapshot exists: ${snapshot.exists}');
+      print('Snapshot value: ${snapshot.value}');
+
+      if (mounted) {
+        final data = snapshot.value as Map<dynamic, dynamic>?;
+        final isActive = data?['alertActive'] == true;
+        print('Parsed alertActive: $isActive');
+
+        setState(() {
+          _isPanicActive = isActive ?? false;
+        });
+
+        print('UI State updated - _isPanicActive: $_isPanicActive');
+      }
+    } catch (e) {
+      print('Initial panic check error: $e');
+    }
+
+    // Real-time listener
+    _panicListener = FirebaseDatabase.instance
+        .ref('panic_alerts/${user.uid}')
+        .onValue
+        .listen(
+          (DatabaseEvent event) {
+            print('Real-time update received');
+            print('Real-time snapshot value: ${event.snapshot.value}');
+
+            final data = event.snapshot.value as Map<dynamic, dynamic>?;
+            if (mounted) {
+              final isActive = data?['alertActive'] == true;
+              print('Real-time parsed alertActive: $isActive');
+
+              setState(() {
+                _isPanicActive = isActive ?? false;
+              });
+
+              print(
+                'Real-time UI State updated - _isPanicActive: $_isPanicActive',
+              );
+            }
+          },
+          onError: (error) {
+            print('Real-time listener error: $error');
+          },
+        );
+  }
+
+  Future<void> _disablePanic() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      print('Disabling panic for user: ${user.uid}');
+      await FirebaseDatabase.instance.ref('panic_alerts/${user.uid}').update({
+        'alertActive': false,
+        'status': 'cancelled',
+        'cancelledAt': ServerValue.timestamp,
+      });
+
+      setState(() {
+        _isPanicActive = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Emergency alert cancelled'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('Error disabling panic: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error disabling panic: $e')));
+    }
   }
 
   Future<void> _getLocation() async {
@@ -68,7 +165,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _isLoading = false;
       });
 
-      // Move map after rebuild
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (currentLocation != null) {
           _mapController.move(currentLocation!, 13.0);
@@ -78,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
       print('Location service error: $e');
       if (!mounted) return;
       setState(() {
-        currentLocation = const LatLng(20.5937, 78.9629); // Fallback
+        currentLocation = const LatLng(20.5937, 78.9629);
         _isLoading = false;
       });
 
@@ -103,11 +199,14 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _panicListener?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    print('Building HomeScreen - _isPanicActive: $_isPanicActive');
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -118,6 +217,32 @@ class _HomeScreenState extends State<HomeScreen> {
         foregroundColor: Colors.white,
         elevation: 5,
         shadowColor: Colors.black.withOpacity(0.3),
+        actions: [
+          if (_isPanicActive)
+            Container(
+              margin: const EdgeInsets.only(right: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.red,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.warning, color: Colors.white, size: 18),
+                  const SizedBox(width: 4),
+                  const Text(
+                    'PANIC ACTIVE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
       body: _isLoading
           ? const Center(
@@ -138,6 +263,88 @@ class _HomeScreenState extends State<HomeScreen> {
             )
           : Column(
               children: [
+                // Panic Alert Banner
+                if (_isPanicActive)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(color: Colors.red.withOpacity(0.3)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.red.withOpacity(0.2),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.warning,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Emergency Alert Active',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.red,
+                                ),
+                              ),
+                              Text(
+                                'Your emergency alert is active. Help is on the way.',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.red,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _disablePanic,
+                          icon: const Icon(
+                            Icons.cancel,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          label: const Text(
+                            'Cancel',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
                 // Safety Score Card
                 Container(
                   margin: const EdgeInsets.all(16),
@@ -267,12 +474,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                     height: 50,
                                     child: Container(
                                       decoration: BoxDecoration(
-                                        color: Colors.blue.withOpacity(0.2),
+                                        color: _isPanicActive
+                                            ? Colors.red.withOpacity(0.3)
+                                            : Colors.blue.withOpacity(0.2),
                                         shape: BoxShape.circle,
                                       ),
-                                      child: const Icon(
+                                      child: Icon(
                                         Icons.location_on,
-                                        color: Colors.red,
+                                        color: _isPanicActive
+                                            ? Colors.red
+                                            : Colors.red,
                                         size: 30,
                                       ),
                                     ),
@@ -321,18 +532,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      // In lib/screens/home_screen.dart, within the build method's Action Buttons Container
                       ElevatedButton.icon(
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const PanicScreen(),
-                          ),
-                        ),
+                        onPressed: _isPanicActive
+                            ? null
+                            : () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const PanicScreen(),
+                                ),
+                              ),
                         icon: const Icon(Icons.warning, size: 20),
                         label: const Text('Panic'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
+                          backgroundColor: _isPanicActive
+                              ? Colors.grey
+                              : Colors.red,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 20,
