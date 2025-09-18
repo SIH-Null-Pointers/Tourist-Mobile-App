@@ -25,28 +25,24 @@ class _HomeScreenState extends State<HomeScreen> {
   final Random random = Random();
   Timer? _timer;
   Timer? _locationTimer;
-  Timer? _firestoreLocationTimer; // New timer for Firestore storage
+  Timer? _firestoreLocationTimer;
+  Timer? _safetyTimer;
   LatLng? currentLocation;
   final Location _locationService = Location();
   final MapController _mapController = MapController();
   bool _isLoading = true;
   StreamSubscription<DatabaseEvent>? _panicListener;
   bool _mapIsReady = false;
+  late List<Map<String, dynamic>> safeZones = [];
 
   @override
   void initState() {
     super.initState();
+    _loadSafeZones();
     _checkPanicStatus();
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (mounted) {
-        setState(() {
-          safetyScore = (70 + random.nextDouble() * 30).clamp(0.0, 100.0);
-          alertStatus = safetyScore > 80
-              ? 'Safe'
-              : safetyScore > 60
-              ? 'Moderate'
-              : 'Caution';
-        });
+        _updateSafetyStatus();
       }
     });
 
@@ -57,9 +53,38 @@ class _HomeScreenState extends State<HomeScreen> {
     Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
         _startLocationUpdates();
-        _startFirestoreLocationStorage(); // Start Firestore storage timer
+        _startFirestoreLocationStorage();
       }
     });
+  }
+
+  Future<void> _loadSafeZones() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('safe_zones')
+          .get();
+      if (mounted) {
+        setState(() {
+          safeZones = snapshot.docs.map((doc) {
+            final data = doc.data();
+            return {
+              'id': doc.id,
+              'lat': data['lat'] ?? 0.0,
+              'lng': data['lng'] ?? 0.0,
+              'radius': data['radius'] ?? 100.0,
+            };
+          }).toList();
+        });
+        print('Loaded ${safeZones.length} safe zones');
+      }
+    } catch (e) {
+      debugPrint('Error loading safe zones: $e');
+      if (mounted) {
+        setState(() {
+          safeZones = [];
+        });
+      }
+    }
   }
 
   Future<void> _initializeLocation() async {
@@ -116,6 +141,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Store initial location in Firestore
       await _storeLocationInFirestore();
+
+      // Update safety status
+      _updateSafetyStatus();
     } catch (e) {
       print('Location initialization error: $e');
       _handleLocationFailure();
@@ -134,6 +162,7 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateUserLocation();
       _storeLocationInFirestore();
+      _updateSafetyStatus();
     });
   }
 
@@ -146,7 +175,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _startFirestoreLocationStorage() {
     // Store location in Firestore every 30 minutes
-    _firestoreLocationTimer = Timer.periodic(const Duration(minutes: 30), (timer) {
+    _firestoreLocationTimer = Timer.periodic(const Duration(minutes: 30), (
+      timer,
+    ) {
       _storeLocationInFirestore();
     });
   }
@@ -187,6 +218,10 @@ class _HomeScreenState extends State<HomeScreen> {
             _mapController.move(newLocation, 13.0);
           }
         }
+      } else {
+        setState(() {
+          currentLocation = newLocation;
+        });
       }
 
       // Always update real-time database (every 10 seconds)
@@ -204,8 +239,75 @@ class _HomeScreenState extends State<HomeScreen> {
           'Real-time location updated: ${newLocation.latitude}, ${newLocation.longitude}',
         );
       }
+
+      // Update safety status
+      _updateSafetyStatus();
     } catch (e) {
       print('Location update error: $e');
+    }
+  }
+
+  void _updateSafetyStatus() {
+    if (currentLocation == null || safeZones.isEmpty) return;
+
+    double nearestDist = double.infinity;
+    bool inSafeZone = false;
+
+    // Check if user is in any safe zone
+    for (var zone in safeZones) {
+      final lat = zone['lat']?.toDouble() ?? 0.0;
+      final lng = zone['lng']?.toDouble() ?? 0.0;
+      final radius = zone['radius']?.toDouble() ?? 100.0;
+
+      final dist = _calculateDistance(
+        currentLocation!.latitude,
+        currentLocation!.longitude,
+        lat,
+        lng,
+      );
+
+      if (dist <= radius) {
+        inSafeZone = true;
+        break;
+      }
+
+      // Track nearest safe zone
+      if (dist < nearestDist) {
+        nearestDist = dist;
+      }
+    }
+
+    double score;
+    String status;
+
+    if (inSafeZone) {
+      score = 100.0;
+      status = 'Safe';
+    } else if (nearestDist == double.infinity) {
+      score = 0.0;
+      status = 'No Safe Zones Nearby';
+    } else {
+      // Calculate safety score based on distance to nearest safe zone
+      const double maxDist = 5000.0; // 5km maximum distance
+      score = ((maxDist - nearestDist) / maxDist * 100).clamp(0.0, 100.0);
+
+      if (nearestDist < 200) {
+        status = 'Safe';
+      } else if (nearestDist < 500) {
+        status = 'Moderate';
+      } else if (nearestDist < 1000) {
+        status = 'Caution';
+      } else {
+        status = 'Danger - Reach Safe Zone';
+        score = score.clamp(0.0, 20.0);
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        safetyScore = score;
+        alertStatus = status;
+      });
     }
   }
 
@@ -220,13 +322,13 @@ class _HomeScreenState extends State<HomeScreen> {
           .doc(user.uid)
           .collection('location_history')
           .add({
-        'latitude': currentLocation!.latitude,
-        'longitude': currentLocation!.longitude,
-        'timestamp': FieldValue.serverTimestamp(),
-        'safetyScore': safetyScore,
-        'status': alertStatus,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
+            'latitude': currentLocation!.latitude,
+            'longitude': currentLocation!.longitude,
+            'timestamp': FieldValue.serverTimestamp(),
+            'safetyScore': safetyScore,
+            'status': alertStatus,
+            'createdAt': DateTime.now().toIso8601String(),
+          });
 
       print(
         'Location stored in Firestore: ${currentLocation!.latitude}, ${currentLocation!.longitude}',
@@ -237,11 +339,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   double _calculateDistance(
-      double lat1,
-      double lon1,
-      double lat2,
-      double lon2,
-      ) {
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
     const R = 6371000; // Earth's radius in meters
     final phi1 = _deg2rad(lat1);
     final phi2 = _deg2rad(lat2);
@@ -250,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final a =
         sin(deltaPhi / 2) * sin(deltaPhi / 2) +
-            cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2);
+        cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2);
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return R * c;
   }
@@ -275,97 +377,44 @@ class _HomeScreenState extends State<HomeScreen> {
 
       print('Panic snapshot exists: ${snapshot.exists}');
 
-      if (mounted) {
+      if (snapshot.exists) {
         final data = snapshot.value as Map<dynamic, dynamic>?;
-        final isActive = data?['alertActive'] == true;
-        print('Parsed alertActive: $isActive');
-
-        if (mounted) {
-          setState(() {
-            _isPanicActive = isActive ?? false;
-          });
+        if (data != null && data['alertActive'] == true) {
+          if (mounted) {
+            setState(() {
+              _isPanicActive = true;
+            });
+          }
         }
       }
     } catch (e) {
-      print('Panic check error: $e');
+      print('Error checking panic status: $e');
     }
-
-    // Real-time listener
-    _panicListener = FirebaseDatabase.instance
-        .ref('panic_alerts/${user.uid}')
-        .onValue
-        .listen(
-          (DatabaseEvent event) {
-        final data = event.snapshot.value as Map<dynamic, dynamic>?;
-        if (mounted) {
-          final isActive = data?['alertActive'] == true;
-          setState(() {
-            _isPanicActive = isActive ?? false;
-          });
-        }
-      },
-      onError: (error) {
-        print('Panic listener error: $error');
-      },
-    );
-  }
-
-  Future<void> _disablePanic() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      await FirebaseDatabase.instance.ref('panic_alerts/${user.uid}').update({
-        'alertActive': false,
-        'status': 'cancelled',
-        'cancelledAt': ServerValue.timestamp,
-      });
-
-      if (mounted) {
-        setState(() {
-          _isPanicActive = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Emergency alert cancelled'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      print('Error disabling panic: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
-    }
-  }
-
-  Color _getStatusColor() {
-    if (safetyScore > 80) return Colors.green;
-    if (safetyScore > 60) return Colors.orange;
-    return Colors.red;
-  }
-
-  IconData _getStatusIcon() {
-    if (safetyScore > 80) return Icons.check_circle;
-    if (safetyScore > 60) return Icons.warning;
-    return Icons.dangerous;
   }
 
   @override
   void dispose() {
     _timer?.cancel();
     _locationTimer?.cancel();
-    _firestoreLocationTimer?.cancel(); // Cancel Firestore timer
+    _firestoreLocationTimer?.cancel();
     _panicListener?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Tourist Safety'),
+          backgroundColor: Colors.blue,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -374,210 +423,22 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         backgroundColor: Colors.blue[800],
         foregroundColor: Colors.white,
-        elevation: 5,
-        shadowColor: Colors.black.withOpacity(0.3),
-        actions: [
-          if (_isPanicActive)
-            Container(
-              margin: const EdgeInsets.only(right: 16),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.red,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.warning, color: Colors.white, size: 18),
-                  const SizedBox(width: 4),
-                  const Text(
-                    'PANIC ACTIVE',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
+        elevation: 0,
+        centerTitle: true,
       ),
-      body: _isLoading
-          ? const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-              strokeWidth: 3,
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Getting your location...',
-              style: TextStyle(fontSize: 16, color: Colors.grey),
-            ),
-          ],
-        ),
-      )
-          : currentLocation == null
-          ? const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.location_off, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
-            Text(
-              'Unable to get location',
-              style: TextStyle(fontSize: 18, color: Colors.grey),
-            ),
-            Text(
-              'Using default location',
-              style: TextStyle(fontSize: 14, color: Colors.grey),
-            ),
-          ],
-        ),
-      )
-          : Column(
+      body: Column(
         children: [
-          // Location Status
+          // Safety Status Card
           Container(
             margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blue[50],
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.blue.withOpacity(0.2)),
-            ),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.location_on,
-                  color: Colors.blue,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Live Location Tracking',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.blue,
-                        ),
-                      ),
-                      Text(
-                        'Lat: ${currentLocation!.latitude.toStringAsFixed(6)}, '
-                            'Lng: ${currentLocation!.longitude.toStringAsFixed(6)}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.blueGrey,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.sync, color: Colors.green, size: 20),
-              ],
-            ),
-          ),
-
-          // Panic Alert Banner
-          if (_isPanicActive)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(color: Colors.red.withOpacity(0.3)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.red.withOpacity(0.2),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(
-                      Icons.warning,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Emergency Alert Active',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.red,
-                          ),
-                        ),
-                        Text(
-                          'Your emergency alert is active. Help is on the way.',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.red,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: _disablePanic,
-                    icon: const Icon(
-                      Icons.cancel,
-                      size: 16,
-                      color: Colors.white,
-                    ),
-                    label: const Text(
-                      'Cancel',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Safety Score Card
-          Container(
-            margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(20),
               boxShadow: [
                 BoxShadow(
                   color: Colors.grey.withOpacity(0.3),
-                  blurRadius: 10,
+                  blurRadius: 15,
                   offset: const Offset(0, 5),
                 ),
               ],
@@ -587,70 +448,58 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Safety Score',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '${safetyScore.toStringAsFixed(1)}%',
-                          style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            color: _getStatusColor(),
-                          ),
-                        ),
-                      ],
+                    const Text(
+                      'Safety Score',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
+                        horizontal: 12,
+                        vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: _getStatusColor().withOpacity(0.1),
+                        color: safetyScore > 80
+                            ? Colors.green
+                            : safetyScore > 60
+                            ? Colors.orange
+                            : Colors.red,
                         borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _getStatusColor().withOpacity(0.3),
-                        ),
                       ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _getStatusIcon(),
-                            color: _getStatusColor(),
-                            size: 18,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            alertStatus,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: _getStatusColor(),
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        alertStatus,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 10),
                 LinearProgressIndicator(
                   value: safetyScore / 100,
-                  backgroundColor: Colors.grey[200],
+                  backgroundColor: Colors.grey[300],
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    _getStatusColor(),
+                    safetyScore > 80
+                        ? Colors.green
+                        : safetyScore > 60
+                        ? Colors.orange
+                        : Colors.red,
                   ),
                   borderRadius: BorderRadius.circular(10),
                   minHeight: 10,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${safetyScore.toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
@@ -693,10 +542,59 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         TileLayer(
                           urlTemplate:
-                          'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
                           subdomains: const ['a', 'b', 'c'],
                           userAgentPackageName:
-                          'com.example.tourist_safety_app',
+                              'com.example.tourist_safety_app',
+                        ),
+                        // Safe zones bubbles - sized to cover radius
+                        MarkerLayer(
+                          markers: safeZones.map((zone) {
+                            final lat = zone['lat']?.toDouble() ?? 0.0;
+                            final lng = zone['lng']?.toDouble() ?? 0.0;
+                            final radius = zone['radius']?.toDouble() ?? 100.0;
+
+                            // Calculate pixel size based on radius (1 meter ≈ 0.000009 degrees)
+                            // Convert radius to degrees and then to pixels
+                            final double radiusInDegrees = radius * 0.000009;
+                            final double pixelSize =
+                                radiusInDegrees *
+                                100000; // Scale factor for visibility
+
+                            return Marker(
+                              point: LatLng(lat, lng),
+                              width: pixelSize.clamp(
+                                40.0,
+                                300.0,
+                              ), // Clamp between 40-300 pixels
+                              height: pixelSize.clamp(40.0, 300.0),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.green.withOpacity(0.3),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Colors.green,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Center(
+                                  child: Container(
+                                    width: 30,
+                                    height: 30,
+                                    decoration: const BoxDecoration(
+                                      color: Colors.green,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(
+                                      Icons.safety_check,
+                                      color: Colors.white,
+                                      size: 16,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
                         ),
                         MarkerLayer(
                           markers: [
@@ -733,10 +631,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _updateUserLocation,
                     mini: true,
                     backgroundColor: Colors.white,
-                    child: Icon(
-                      Icons.my_location,
-                      color: Colors.blue[800],
-                    ),
+                    child: Icon(Icons.my_location, color: Colors.blue[800]),
                   ),
                 ),
               ],
@@ -746,10 +641,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // Action Buttons
           Container(
             margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 12,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(20),
@@ -768,17 +660,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: _isPanicActive
                       ? null
                       : () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const PanicScreen(),
-                    ),
-                  ),
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const PanicScreen(),
+                          ),
+                        ),
                   icon: const Icon(Icons.warning, size: 20),
                   label: const Text('Panic'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _isPanicActive
-                        ? Colors.grey
-                        : Colors.red,
+                    backgroundColor: _isPanicActive ? Colors.grey : Colors.red,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 20,
@@ -792,9 +682,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ElevatedButton.icon(
                   onPressed: () => Navigator.push(
                     context,
-                    MaterialPageRoute(
-                      builder: (_) => const ProfileScreen(),
-                    ),
+                    MaterialPageRoute(builder: (_) => const ProfileScreen()),
                   ),
                   icon: const Icon(Icons.person, size: 20),
                   label: const Text('Profile'),
@@ -816,11 +704,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           // Family Tracking Card
           Container(
-            margin: const EdgeInsets.only(
-              left: 16,
-              right: 16,
-              bottom: 16,
-            ),
+            margin: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.blue[50],
@@ -835,11 +719,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: Colors.blue,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(
-                    Icons.group,
-                    color: Colors.white,
-                    size: 24,
-                  ),
+                  child: const Icon(Icons.group, color: Colors.white, size: 24),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -856,19 +736,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       Text(
                         'Active - All members safe',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.blueGrey,
-                        ),
+                        style: TextStyle(fontSize: 14, color: Colors.blueGrey),
                       ),
                     ],
                   ),
                 ),
-                const Icon(
-                  Icons.check_circle,
-                  color: Colors.green,
-                  size: 24,
-                ),
+                const Icon(Icons.check_circle, color: Colors.green, size: 24),
               ],
             ),
           ),
