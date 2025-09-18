@@ -56,13 +56,40 @@ class _PanicScreenState extends State<PanicScreen> {
       }
 
       // Firestore alert
-      DocumentReference alertDoc =
-      await FirebaseFirestore.instance.collection('panic_alerts').add({
+      DocumentReference alertDoc = await FirebaseFirestore.instance
+          .collection('panic_alerts')
+          .add({
+            'userId': user.uid,
+            'alertActive': true,
+            'timestamp': FieldValue.serverTimestamp(),
+            'location':
+                coordinates ??
+                {'latitude': 0.0, 'longitude': 0.0, 'error': true},
+            'userInfo': {
+              'name': userProfile['name'] ?? 'Unknown',
+              'nationality': userProfile['nationality'] ?? 'Unknown',
+              'passport': userProfile['passport'] ?? 'Unknown',
+              'id': userProfile['id'] ?? 'Unknown',
+              'trip_start': userProfile['trip_start'] ?? 'Unknown',
+              'trip_end': userProfile['trip_end'] ?? 'Unknown',
+            },
+            'message': 'A user has used the panic button',
+            'alertType': 'panic',
+            'status': 'pending',
+            'adminResponse': null,
+          });
+
+      // Realtime Database alert - COMPLETE DATA
+      DatabaseReference dbRef = FirebaseDatabase.instance.ref(
+        'panic_alerts/${user.uid}',
+      );
+      await dbRef.set({
         'userId': user.uid,
         'alertActive': true,
-        'timestamp': FieldValue.serverTimestamp(),
-        'location': coordinates ??
-            {'latitude': 0.0, 'longitude': 0.0, 'error': true},
+        'timestamp': ServerValue.timestamp,
+        'message': 'A user has used the panic button',
+        'location':
+            coordinates ?? {'latitude': 0.0, 'longitude': 0.0, 'error': true},
         'userInfo': {
           'name': userProfile['name'] ?? 'Unknown',
           'nationality': userProfile['nationality'] ?? 'Unknown',
@@ -71,21 +98,12 @@ class _PanicScreenState extends State<PanicScreen> {
           'trip_start': userProfile['trip_start'] ?? 'Unknown',
           'trip_end': userProfile['trip_end'] ?? 'Unknown',
         },
-        'message': 'A user has used the panic button',
-        'alertType': 'panic',
+        'alertId': alertDoc.id,
         'status': 'pending',
-        'adminResponse': null,
+        'createdAt': ServerValue.timestamp,
       });
 
-      // Realtime Database alert
-      DatabaseReference dbRef =
-      FirebaseDatabase.instance.ref('panic_alerts/${user.uid}');
-      await dbRef.set({
-        'userId': user.uid,
-        'alertActive': true,
-        'timestamp': ServerValue.timestamp,
-        'message': 'A user has used the panic button'
-      });
+      print('Realtime Database alert saved for user: ${user.uid}');
 
       // Log to Firestore panic_logs
       await FirebaseFirestore.instance.collection('panic_logs').add({
@@ -102,6 +120,7 @@ class _PanicScreenState extends State<PanicScreen> {
         _statusMessage = 'Emergency alert sent successfully!';
       });
     } catch (e) {
+      print('Error in _triggerPanicAlert: $e');
       setState(() {
         _isLoading = false;
         _statusMessage = 'Error sending alert: ${e.toString()}';
@@ -120,7 +139,8 @@ class _PanicScreenState extends State<PanicScreen> {
         if (!serviceEnabled) return null;
       }
 
-      PermissionStatus permissionGranted = await _locationService.hasPermission();
+      PermissionStatus permissionGranted = await _locationService
+          .hasPermission();
       if (permissionGranted == PermissionStatus.denied) {
         permissionGranted = await _locationService.requestPermission();
         if (permissionGranted != PermissionStatus.granted) return null;
@@ -139,8 +159,10 @@ class _PanicScreenState extends State<PanicScreen> {
 
   Future<Map<String, dynamic>?> _getUserProfile(String userId) async {
     try {
-      DocumentSnapshot userDoc =
-      await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .get();
 
       if (userDoc.exists) {
         return userDoc.data() as Map<String, dynamic>?;
@@ -162,7 +184,7 @@ class _PanicScreenState extends State<PanicScreen> {
     } catch (e) {
       setState(() {
         _statusMessage =
-        'All emergency methods failed. Please call 112 manually.';
+            'All emergency methods failed. Please call 112 manually.';
       });
     }
   }
@@ -178,18 +200,22 @@ class _PanicScreenState extends State<PanicScreen> {
           .collection('panic_alerts')
           .doc(_activeAlertId)
           .update({
-        'alertActive': false,
-        'status': 'cancelled',
-        'cancelledAt': FieldValue.serverTimestamp(),
-        'cancelledBy': 'user',
-      });
+            'alertActive': false,
+            'status': 'cancelled',
+            'cancelledAt': FieldValue.serverTimestamp(),
+            'cancelledBy': 'user',
+          });
 
       // Cancel in Realtime Database
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        await FirebaseDatabase.instance
-            .ref('panic_alerts/${user.uid}')
-            .update({'alertActive': false, 'status': 'cancelled'});
+        await FirebaseDatabase.instance.ref('panic_alerts/${user.uid}').update({
+          'alertActive': false,
+          'status': 'cancelled',
+          'cancelledAt': ServerValue.timestamp,
+        });
+
+        print('Realtime Database alert cancelled for user: ${user.uid}');
       }
 
       setState(() {
@@ -202,6 +228,7 @@ class _PanicScreenState extends State<PanicScreen> {
         if (mounted) Navigator.pop(context);
       });
     } catch (e) {
+      print('Error cancelling alert: $e');
       setState(() {
         _isLoading = false;
         _statusMessage = 'Error cancelling alert: ${e.toString()}';
@@ -252,14 +279,14 @@ class _PanicScreenState extends State<PanicScreen> {
                 ),
                 child: _isLoading
                     ? const CircularProgressIndicator(
-                  color: Colors.red,
-                  strokeWidth: 3,
-                )
+                        color: Colors.red,
+                        strokeWidth: 3,
+                      )
                     : Icon(
-                  _alertSent ? Icons.check_circle : Icons.warning,
-                  size: 100,
-                  color: _alertSent ? Colors.green : Colors.red,
-                ),
+                        _alertSent ? Icons.check_circle : Icons.warning,
+                        size: 100,
+                        color: _alertSent ? Colors.green : Colors.red,
+                      ),
               ),
               const SizedBox(height: 30),
               Text(
