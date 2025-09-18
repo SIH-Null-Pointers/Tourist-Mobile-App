@@ -23,27 +23,199 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isPanicActive = false;
   final Random random = Random();
   Timer? _timer;
+  Timer? _locationTimer;
   LatLng? currentLocation;
   final Location _locationService = Location();
   final MapController _mapController = MapController();
   bool _isLoading = true;
   StreamSubscription<DatabaseEvent>? _panicListener;
+  bool _mapIsReady = false;
 
   @override
   void initState() {
     super.initState();
     _checkPanicStatus();
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      setState(() {
-        safetyScore = (70 + random.nextDouble() * 30).clamp(0.0, 100.0);
-        alertStatus = safetyScore > 80
-            ? 'Safe'
-            : safetyScore > 60
-            ? 'Moderate'
-            : 'Caution';
-      });
+      if (mounted) {
+        setState(() {
+          safetyScore = (70 + random.nextDouble() * 30).clamp(0.0, 100.0);
+          alertStatus = safetyScore > 80
+              ? 'Safe'
+              : safetyScore > 60
+              ? 'Moderate'
+              : 'Caution';
+        });
+      }
     });
-    _getLocation();
+
+    // Get initial location and start updates
+    _initializeLocation();
+
+    // Start location updates after initial load
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        _startLocationUpdates();
+      }
+    });
+  }
+
+  Future<void> _initializeLocation() async {
+    try {
+      print('Initializing location...');
+
+      // Request permissions and service
+      bool serviceEnabled = await _locationService.serviceEnabled();
+      if (!serviceEnabled) {
+        serviceEnabled = await _locationService.requestService();
+        if (!serviceEnabled) {
+          print('Location service not enabled');
+          _handleLocationFailure();
+          return;
+        }
+      }
+
+      PermissionStatus permissionGranted = await _locationService
+          .hasPermission();
+      if (permissionGranted == PermissionStatus.denied) {
+        permissionGranted = await _locationService.requestPermission();
+        if (permissionGranted != PermissionStatus.granted) {
+          print('Location permission denied');
+          _handleLocationFailure();
+          return;
+        }
+      }
+
+      // Get location
+      print('Getting initial location...');
+      final locationData = await _locationService.getLocation();
+
+      if (!mounted) return;
+
+      final lat = locationData.latitude ?? 20.5937;
+      final lng = locationData.longitude ?? 78.9629;
+
+      print('Location obtained: $lat, $lng');
+
+      setState(() {
+        currentLocation = LatLng(lat, lng);
+        _isLoading = false;
+      });
+
+      // Move map after frame
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (currentLocation != null && _mapIsReady) {
+          _mapController.move(currentLocation!, 13.0);
+        }
+      });
+
+      // Initial database update
+      await _updateUserLocation();
+    } catch (e) {
+      print('Location initialization error: $e');
+      _handleLocationFailure();
+    }
+  }
+
+  void _handleLocationFailure() {
+    if (!mounted) return;
+
+    setState(() {
+      currentLocation = const LatLng(20.5937, 78.9629); // India default
+      _isLoading = false;
+    });
+
+    // Still update database with fallback location
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _updateUserLocation();
+    });
+  }
+
+  void _startLocationUpdates() {
+    // Update location every 10 seconds
+    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _updateUserLocation();
+    });
+  }
+
+  Future<void> _updateUserLocation() async {
+    try {
+      bool serviceEnabled = await _locationService.serviceEnabled();
+      if (!serviceEnabled) return;
+
+      PermissionStatus permissionGranted = await _locationService
+          .hasPermission();
+      if (permissionGranted != PermissionStatus.granted) return;
+
+      final locationData = await _locationService.getLocation();
+      final newLocation = LatLng(
+        locationData.latitude ?? currentLocation?.latitude ?? 20.5937,
+        locationData.longitude ?? currentLocation?.longitude ?? 78.9629,
+      );
+
+      if (!mounted) return;
+
+      // Update UI only if location changed significantly
+      if (currentLocation != null) {
+        final distance = _calculateDistance(
+          currentLocation!.latitude,
+          currentLocation!.longitude,
+          newLocation.latitude,
+          newLocation.longitude,
+        );
+
+        if (distance > 10) {
+          // Only update if moved more than 10 meters
+          setState(() {
+            currentLocation = newLocation;
+          });
+
+          if (_mapIsReady) {
+            _mapController.move(newLocation, 13.0);
+          }
+        }
+      }
+
+      // Always update database
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await FirebaseDatabase.instance.ref('users/${user.uid}').update({
+          'latitude': newLocation.latitude,
+          'longitude': newLocation.longitude,
+          'timestamp': ServerValue.timestamp,
+          'safetyScore': safetyScore,
+          'status': alertStatus,
+        });
+
+        print(
+          'Location updated: ${newLocation.latitude}, ${newLocation.longitude}',
+        );
+      }
+    } catch (e) {
+      print('Location update error: $e');
+    }
+  }
+
+  double _calculateDistance(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    const R = 6371000; // Earth's radius in meters
+    final phi1 = _deg2rad(lat1);
+    final phi2 = _deg2rad(lat2);
+    final deltaPhi = _deg2rad(lat2 - lat1);
+    final deltaLambda = _deg2rad(lon2 - lon1);
+
+    final a =
+        sin(deltaPhi / 2) * sin(deltaPhi / 2) +
+        cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2);
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return R * c;
+  }
+
+  double _deg2rad(double degrees) {
+    return degrees * pi / 180;
   }
 
   Future<void> _checkPanicStatus() async {
@@ -55,28 +227,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
     print('Checking panic status for user: ${user.uid}');
 
-    // Initial check
     try {
       final snapshot = await FirebaseDatabase.instance
           .ref('panic_alerts/${user.uid}')
           .get();
 
-      print('Snapshot exists: ${snapshot.exists}');
-      print('Snapshot value: ${snapshot.value}');
+      print('Panic snapshot exists: ${snapshot.exists}');
 
       if (mounted) {
         final data = snapshot.value as Map<dynamic, dynamic>?;
         final isActive = data?['alertActive'] == true;
         print('Parsed alertActive: $isActive');
 
-        setState(() {
-          _isPanicActive = isActive ?? false;
-        });
-
-        print('UI State updated - _isPanicActive: $_isPanicActive');
+        if (mounted) {
+          setState(() {
+            _isPanicActive = isActive ?? false;
+          });
+        }
       }
     } catch (e) {
-      print('Initial panic check error: $e');
+      print('Panic check error: $e');
     }
 
     // Real-time listener
@@ -85,25 +255,16 @@ class _HomeScreenState extends State<HomeScreen> {
         .onValue
         .listen(
           (DatabaseEvent event) {
-            print('Real-time update received');
-            print('Real-time snapshot value: ${event.snapshot.value}');
-
             final data = event.snapshot.value as Map<dynamic, dynamic>?;
             if (mounted) {
               final isActive = data?['alertActive'] == true;
-              print('Real-time parsed alertActive: $isActive');
-
               setState(() {
                 _isPanicActive = isActive ?? false;
               });
-
-              print(
-                'Real-time UI State updated - _isPanicActive: $_isPanicActive',
-              );
             }
           },
           onError: (error) {
-            print('Real-time listener error: $error');
+            print('Panic listener error: $error');
           },
         );
   }
@@ -113,74 +274,31 @@ class _HomeScreenState extends State<HomeScreen> {
     if (user == null) return;
 
     try {
-      print('Disabling panic for user: ${user.uid}');
       await FirebaseDatabase.instance.ref('panic_alerts/${user.uid}').update({
         'alertActive': false,
         'status': 'cancelled',
         'cancelledAt': ServerValue.timestamp,
       });
 
-      setState(() {
-        _isPanicActive = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isPanicActive = false;
+        });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Emergency alert cancelled'),
-          backgroundColor: Colors.green,
-        ),
-      );
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Emergency alert cancelled'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
       print('Error disabling panic: $e');
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error disabling panic: $e')));
-    }
-  }
-
-  Future<void> _getLocation() async {
-    try {
-      bool serviceEnabled;
-      PermissionStatus permissionGranted;
-
-      serviceEnabled = await _locationService.serviceEnabled();
-      if (!serviceEnabled) {
-        serviceEnabled = await _locationService.requestService();
-        if (!serviceEnabled) return;
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
-
-      permissionGranted = await _locationService.hasPermission();
-      if (permissionGranted == PermissionStatus.denied) {
-        permissionGranted = await _locationService.requestPermission();
-        if (permissionGranted != PermissionStatus.granted) return;
-      }
-
-      final locationData = await _locationService.getLocation();
-      if (!mounted) return;
-      setState(() {
-        currentLocation = LatLng(
-          locationData.latitude ?? 20.5937,
-          locationData.longitude ?? 78.9629,
-        );
-        _isLoading = false;
-      });
-
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (currentLocation != null) {
-          _mapController.move(currentLocation!, 13.0);
-        }
-      });
-    } catch (e) {
-      print('Location service error: $e');
-      if (!mounted) return;
-      setState(() {
-        currentLocation = const LatLng(20.5937, 78.9629);
-        _isLoading = false;
-      });
-
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _mapController.move(currentLocation!, 13.0);
-      });
     }
   }
 
@@ -199,14 +317,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _locationTimer?.cancel();
     _panicListener?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    print('Building HomeScreen - _isPanicActive: $_isPanicActive');
-
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -261,13 +378,76 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             )
+          : currentLocation == null
+          ? const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.location_off, size: 64, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text(
+                    'Unable to get location',
+                    style: TextStyle(fontSize: 18, color: Colors.grey),
+                  ),
+                  Text(
+                    'Using default location',
+                    style: TextStyle(fontSize: 14, color: Colors.grey),
+                  ),
+                ],
+              ),
+            )
           : Column(
               children: [
+                // Location Status
+                Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.blue.withOpacity(0.2)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.location_on,
+                        color: Colors.blue,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Live Location Tracking',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.blue,
+                              ),
+                            ),
+                            Text(
+                              'Lat: ${currentLocation!.latitude.toStringAsFixed(6)}, '
+                              'Lng: ${currentLocation!.longitude.toStringAsFixed(6)}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.blueGrey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.sync, color: Colors.green, size: 20),
+                    ],
+                  ),
+                ),
+
                 // Panic Alert Banner
                 if (_isPanicActive)
                   Container(
                     width: double.infinity,
-                    margin: const EdgeInsets.all(16),
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: Colors.red.shade50,
@@ -457,6 +637,16 @@ class _HomeScreenState extends State<HomeScreen> {
                             options: MapOptions(
                               initialCenter: currentLocation!,
                               initialZoom: 13.0,
+                              onMapEvent: (MapEvent event) {
+                                if (event is MapEventMove && !_mapIsReady) {
+                                  setState(() {
+                                    _mapIsReady = true;
+                                  });
+                                  if (currentLocation != null) {
+                                    _mapController.move(currentLocation!, 13.0);
+                                  }
+                                }
+                              },
                             ),
                             children: [
                               TileLayer(
@@ -498,7 +688,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         bottom: 16,
                         right: 32,
                         child: FloatingActionButton(
-                          onPressed: _getLocation,
+                          onPressed: _updateUserLocation,
                           mini: true,
                           backgroundColor: Colors.white,
                           child: Icon(
