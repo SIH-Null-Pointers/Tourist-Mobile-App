@@ -112,6 +112,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  // Helper method to format blockchain address safely
+  String _formatBlockchainAddress(String? address) {
+    if (address == null || address == 'Not set') return 'Not set';
+    if (address.length <= 20) return address;
+    return '${address.substring(0, 20)}...';
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_userData == null) {
@@ -125,7 +132,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final tripStart = _userData!['trip_start'] ?? 'Unknown';
     final tripEnd = _userData!['trip_end'] ?? 'Unknown';
     final id = _userData!['id'] ?? 'Unknown';
-    final blockchainAddress = _userData!['blockchain_address'] ?? 'Not set';
+    final blockchainAddress =
+        _userData!['blockchain_address']?.toString() ?? 'Not set';
     final verificationTimestamp =
         _userData!['verification_timestamp'] as Timestamp?;
 
@@ -223,7 +231,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             children: [
                               QrImageView(
                                 data:
-                                    'Tourist ID: $id\nBlockchain: ${blockchainAddress.substring(0, 10)}...',
+                                    'Tourist ID: $id\nBlockchain: ${_formatBlockchainAddress(blockchainAddress)}',
                                 size: 150,
                                 backgroundColor: Colors.white,
                               ),
@@ -368,15 +376,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _buildBlockchainInfo() {
     final blockchainAddress =
         _userData!['blockchain_address']?.toString() ?? 'Not set';
-    String displayAddress;
-
-    if (blockchainAddress == 'Not set') {
-      displayAddress = 'Not set';
-    } else if (blockchainAddress.length > 20) {
-      displayAddress = '${blockchainAddress.substring(0, 20)}...';
-    } else {
-      displayAddress = blockchainAddress;
-    }
+    final displayAddress = _formatBlockchainAddress(blockchainAddress);
 
     return Column(
       children: [

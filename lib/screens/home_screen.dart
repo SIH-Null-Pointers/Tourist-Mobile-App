@@ -1,4 +1,3 @@
-// lib/screens/home_screen.dart (updated)
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -63,9 +62,9 @@ class _HomeScreenState extends State<HomeScreen> {
             final data = doc.data();
             return {
               'id': doc.id,
-              'lat': data['lat'] ?? 0.0,
-              'lng': data['lng'] ?? 0.0,
-              'radius': data['radius'] ?? 100.0,
+              'lat': data['lat']?.toDouble() ?? 0.0,
+              'lng': data['lng']?.toDouble() ?? 0.0,
+              'radius': data['radius']?.toDouble() ?? 100.0,
             };
           }).toList();
         });
@@ -164,20 +163,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _startLocationUpdates() {
-    // Cancel existing timer if any
     _locationTimer?.cancel();
-
-    // Update location every 10 seconds (for real-time database)
     _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
       _updateUserLocation();
     });
   }
 
   void _startFirestoreLocationStorage() {
-    // Cancel existing timer if any
     _firestoreLocationTimer?.cancel();
-
-    // Store location in Firestore every 30 minutes
     _firestoreLocationTimer = Timer.periodic(const Duration(minutes: 30), (
       timer,
     ) {
@@ -212,7 +205,6 @@ class _HomeScreenState extends State<HomeScreen> {
         );
 
         if (distance > 10) {
-          // Only update if moved more than 10 meters
           setState(() {
             currentLocation = newLocation;
           });
@@ -227,7 +219,7 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
 
-      // Always update real-time database (every 10 seconds)
+      // Always update real-time database
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
         await FirebaseDatabase.instance.ref('users/${user.uid}').update({
@@ -243,7 +235,6 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
 
-      // Update safety status
       _updateSafetyStatus();
     } catch (e) {
       print('Location update error: $e');
@@ -256,7 +247,6 @@ class _HomeScreenState extends State<HomeScreen> {
     double nearestDist = double.infinity;
     bool inSafeZone = false;
 
-    // Check if user is in any safe zone
     for (var zone in safeZones) {
       final lat = zone['lat']?.toDouble() ?? 0.0;
       final lng = zone['lng']?.toDouble() ?? 0.0;
@@ -274,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> {
         break;
       }
 
-      // Track nearest safe zone
       if (dist < nearestDist) {
         nearestDist = dist;
       }
@@ -290,8 +279,7 @@ class _HomeScreenState extends State<HomeScreen> {
       score = 0.0;
       status = 'No Safe Zones Nearby';
     } else {
-      // Calculate safety score based on distance to nearest safe zone
-      const double maxDist = 5000.0; // 5km maximum distance
+      const double maxDist = 5000.0;
       score = ((maxDist - nearestDist) / maxDist * 100).clamp(0.0, 100.0);
 
       if (nearestDist < 200) {
@@ -319,7 +307,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null || currentLocation == null) return;
 
-      // Store location history in Firestore every 30 minutes
       await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -347,7 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
     double lat2,
     double lon2,
   ) {
-    const R = 6371000; // Earth's radius in meters
+    const R = 6371000;
     final phi1 = _deg2rad(lat1);
     final phi2 = _deg2rad(lat2);
     final deltaPhi = _deg2rad(lat2 - lat1);
@@ -408,212 +395,230 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     if (_isLoading || !_locationInitialized) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Tourist Safety'),
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
-          elevation: 0,
+        backgroundColor: Colors.grey[50],
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF6366F1)),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Getting your location...',
+                style: TextStyle(color: Colors.grey[600], fontSize: 16),
+              ),
+            ],
+          ),
         ),
-        body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: const Text(
           'Tourist Safety',
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
         ),
-        backgroundColor: Colors.blue[800],
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.notifications_none, size: 24),
+            onPressed: () {},
+          ),
+        ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          // Safety Status Card
-          Container(
-            margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.3),
-                  blurRadius: 15,
-                  offset: const Offset(0, 5),
-                ),
-              ],
+          // Map background
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: currentLocation!,
+              initialZoom: 13.0,
+              onMapReady: () {
+                setState(() {
+                  _mapIsReady = true;
+                });
+              },
             ),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Safety Score',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
+            children: [
+              TileLayer(
+                urlTemplate:
+                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c'],
+                userAgentPackageName: 'com.example.tourist_safety_app',
+              ),
+              // Safe zones
+              CircleLayer(
+                circles: safeZones.map((zone) {
+                  return CircleMarker(
+                    point: LatLng(zone['lat'], zone['lng']),
+                    color: Colors.green.withOpacity(0.15),
+                    borderColor: Colors.green.withOpacity(0.7),
+                    borderStrokeWidth: 2,
+                    useRadiusInMeter: true,
+                    radius: zone['radius'],
+                  );
+                }).toList(),
+              ),
+              // Current location marker
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: currentLocation!,
+                    width: 50,
+                    height: 50,
+                    child: Container(
                       decoration: BoxDecoration(
-                        color: safetyScore > 80
-                            ? Colors.green
-                            : safetyScore > 60
-                            ? Colors.orange
-                            : Colors.red,
-                        borderRadius: BorderRadius.circular(20),
+                        color: _isPanicActive
+                            ? Colors.red.withOpacity(0.2)
+                            : const Color(0xFF6366F1).withOpacity(0.2),
+                        shape: BoxShape.circle,
                       ),
-                      child: Text(
-                        alertStatus,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      child: Icon(
+                        Icons.location_pin,
+                        color: _isPanicActive
+                            ? Colors.red
+                            : const Color(0xFF6366F1),
+                        size: 36,
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                LinearProgressIndicator(
-                  value: safetyScore / 100,
-                  backgroundColor: Colors.grey[300],
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    safetyScore > 80
-                        ? Colors.green
-                        : safetyScore > 60
-                        ? Colors.orange
-                        : Colors.red,
                   ),
-                  borderRadius: BorderRadius.circular(10),
-                  minHeight: 10,
+                ],
+              ),
+            ],
+          ),
+
+          // Gradient overlay at top
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              height: 150,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.black.withOpacity(0.4), Colors.transparent],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  '${safetyScore.toStringAsFixed(0)}%',
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
 
-          // Map Section
-          Expanded(
-            child: Stack(
+          // Main content
+          SafeArea(
+            child: Column(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
+                const SizedBox(height: kToolbarHeight + 16),
+
+                // Safety Status Card
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
+                      color: Colors.white,
                       borderRadius: BorderRadius.circular(20),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.grey.withOpacity(0.3),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 20,
+                          offset: const Offset(0, 10),
                         ),
                       ],
                     ),
-                    child: FlutterMap(
-                      mapController: _mapController,
-                      options: MapOptions(
-                        initialCenter: currentLocation!,
-                        initialZoom: 13.0,
-                        onMapReady: () {
-                          setState(() {
-                            _mapIsReady = true;
-                          });
-                        },
-                      ),
+                    child: Column(
                       children: [
-                        TileLayer(
-                          urlTemplate:
-                              'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          subdomains: const ['a', 'b', 'c'],
-                          userAgentPackageName:
-                              'com.example.tourist_safety_app',
-                        ),
-                        // Safe zones bubbles - sized to cover radius
-                        MarkerLayer(
-                          markers: safeZones.map((zone) {
-                            final lat = zone['lat']?.toDouble() ?? 0.0;
-                            final lng = zone['lng']?.toDouble() ?? 0.0;
-                            final radius = zone['radius']?.toDouble() ?? 100.0;
-
-                            // Calculate pixel size based on radius (1 meter ≈ 0.000009 degrees)
-                            // Convert radius to degrees and then to pixels
-                            final double radiusInDegrees = radius * 0.000009;
-                            final double pixelSize =
-                                radiusInDegrees *
-                                100000; // Scale factor for visibility
-
-                            return Marker(
-                              point: LatLng(lat, lng),
-                              width: pixelSize.clamp(
-                                40.0,
-                                300.0,
-                              ), // Clamp between 40-300 pixels
-                              height: pixelSize.clamp(40.0, 300.0),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.green.withOpacity(0.3),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: Colors.green,
-                                    width: 2,
-                                  ),
-                                ),
-                                child: Center(
-                                  child: Container(
-                                    width: 30,
-                                    height: 30,
-                                    decoration: const BoxDecoration(
-                                      color: Colors.green,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: const Icon(
-                                      Icons.safety_check,
-                                      color: Colors.white,
-                                      size: 16,
-                                    ),
-                                  ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'SAFETY STATUS',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey[600],
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _getStatusColor().withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                alertStatus.toUpperCase(),
+                                style: TextStyle(
+                                  color: _getStatusColor(),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.5,
                                 ),
                               ),
-                            );
-                          }).toList(),
+                            ),
+                          ],
                         ),
-                        MarkerLayer(
-                          markers: [
-                            Marker(
-                              point: currentLocation!,
-                              width: 50,
-                              height: 50,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: _isPanicActive
-                                      ? Colors.red.withOpacity(0.3)
-                                      : Colors.blue.withOpacity(0.2),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  Icons.location_on,
-                                  color: _isPanicActive
-                                      ? Colors.red
-                                      : Colors.red,
-                                  size: 30,
-                                ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${safetyScore.toStringAsFixed(0)}%',
+                                    style: const TextStyle(
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF1F2937),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Safety Score',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            SizedBox(
+                              width: 60,
+                              height: 60,
+                              child: Stack(
+                                children: [
+                                  CircularProgressIndicator(
+                                    value: safetyScore / 100,
+                                    backgroundColor: Colors.grey[200],
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      _getStatusColor(),
+                                    ),
+                                    strokeWidth: 6,
+                                  ),
+                                  Center(
+                                    child: Icon(
+                                      safetyScore > 80
+                                          ? Icons.verified
+                                          : safetyScore > 60
+                                          ? Icons.warning_amber_rounded
+                                          : Icons.dangerous,
+                                      color: _getStatusColor(),
+                                      size: 24,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -622,144 +627,198 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
-                Positioned(
-                  bottom: 16,
-                  right: 32,
-                  child: FloatingActionButton(
-                    onPressed: _updateUserLocation,
-                    mini: true,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.my_location, color: Colors.blue[800]),
-                  ),
-                ),
-              ],
-            ),
-          ),
 
-          // Action Buttons
-          Container(
-            margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.2),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _isPanicActive
-                      ? null
-                      : () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const PanicScreen(),
-                          ),
-                        ),
-                  icon: const Icon(Icons.warning, size: 20),
-                  label: const Text('Panic'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isPanicActive ? Colors.grey : Colors.red,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                  ),
-                  icon: const Icon(Icons.person, size: 20),
-                  label: const Text('Profile'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue[800],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+                const Spacer(),
 
-          // Family Tracking Card
-          Container(
-            margin: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.blue[50],
-              borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: Colors.blue.withOpacity(0.2)),
-            ),
-            child: InkWell(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const FamilyScreen()),
-                );
-              },
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.blue,
-                      borderRadius: BorderRadius.circular(10),
+                // Bottom action section
+                Container(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(30),
+                      topRight: Radius.circular(30),
                     ),
-                    child: const Icon(
-                      Icons.group,
-                      color: Colors.white,
-                      size: 24,
-                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, -5),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Family Tracking',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.blue,
+                  child: Column(
+                    children: [
+                      // Action buttons
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildActionButton(
+                              icon: Icons.warning_amber_rounded,
+                              label: 'Panic',
+                              color: _isPanicActive ? Colors.grey : Colors.red,
+                              onTap: _isPanicActive
+                                  ? null
+                                  : () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const PanicScreen(),
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildActionButton(
+                              icon: Icons.person_outline,
+                              label: 'Profile',
+                              color: const Color(0xFF6366F1),
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const ProfileScreen(),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildActionButton(
+                              icon: Icons.my_location,
+                              label: 'Locate',
+                              color: const Color(0xFF10B981),
+                              onTap: _updateUserLocation,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+
+                      // Family tracking card
+                      InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const FamilyScreen(),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: const Color(0xFFE2E8F0),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFF6366F1,
+                                  ).withOpacity(0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.group,
+                                  color: Color(0xFF6366F1),
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Family Tracking',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF1F2937),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'View family members and their safety status',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(
+                                Icons.arrow_forward_ios_rounded,
+                                color: Color(0xFF94A3B8),
+                                size: 16,
+                              ),
+                            ],
                           ),
                         ),
-                        Text(
-                          'View all family members and their safety status',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.blueGrey,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                  const Icon(Icons.chevron_right, color: Colors.blue, size: 24),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback? onTap,
+  }) {
+    return Material(
+      borderRadius: BorderRadius.circular(12),
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          decoration: BoxDecoration(
+            color: onTap == null ? Colors.grey[300] : color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              Icon(
+                icon,
+                color: onTap == null ? Colors.grey[500] : color,
+                size: 24,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: onTap == null ? Colors.grey[500] : color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Color _getStatusColor() {
+    if (safetyScore > 80) return const Color(0xFF10B981);
+    if (safetyScore > 60) return const Color(0xFFF59E0B);
+    return const Color(0xFFEF4444);
   }
 }
