@@ -1,4 +1,4 @@
-// lib/screens/home_screen.dart
+// lib/screens/home_screen.dart (updated)
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -10,6 +10,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'panic_screen.dart';
 import 'profile_screen.dart';
+import 'family_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<DatabaseEvent>? _panicListener;
   bool _mapIsReady = false;
   late List<Map<String, dynamic>> safeZones = [];
+  bool _locationInitialized = false;
 
   @override
   void initState() {
@@ -48,14 +50,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Get initial location and start updates
     _initializeLocation();
-
-    // Start location updates after initial load
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        _startLocationUpdates();
-        _startFirestoreLocationStorage();
-      }
-    });
   }
 
   Future<void> _loadSafeZones() async {
@@ -127,13 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         currentLocation = LatLng(lat, lng);
         _isLoading = false;
-      });
-
-      // Move map after frame
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (currentLocation != null && _mapIsReady) {
-          _mapController.move(currentLocation!, 13.0);
-        }
+        _locationInitialized = true;
       });
 
       // Initial database update
@@ -144,6 +132,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Update safety status
       _updateSafetyStatus();
+
+      // Start location updates after initial load
+      _startLocationUpdates();
+      _startFirestoreLocationStorage();
     } catch (e) {
       print('Location initialization error: $e');
       _handleLocationFailure();
@@ -156,6 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       currentLocation = const LatLng(20.5937, 78.9629); // India default
       _isLoading = false;
+      _locationInitialized = true;
     });
 
     // Still update database with fallback location
@@ -163,10 +156,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _updateUserLocation();
       _storeLocationInFirestore();
       _updateSafetyStatus();
+
+      // Start location updates even with fallback
+      _startLocationUpdates();
+      _startFirestoreLocationStorage();
     });
   }
 
   void _startLocationUpdates() {
+    // Cancel existing timer if any
+    _locationTimer?.cancel();
+
     // Update location every 10 seconds (for real-time database)
     _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
       _updateUserLocation();
@@ -174,6 +174,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _startFirestoreLocationStorage() {
+    // Cancel existing timer if any
+    _firestoreLocationTimer?.cancel();
+
     // Store location in Firestore every 30 minutes
     _firestoreLocationTimer = Timer.periodic(const Duration(minutes: 30), (
       timer,
@@ -403,7 +406,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
+    if (_isLoading || !_locationInitialized) {
       return Scaffold(
         appBar: AppBar(
           title: const Text('Tourist Safety'),
@@ -528,15 +531,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       options: MapOptions(
                         initialCenter: currentLocation!,
                         initialZoom: 13.0,
-                        onMapEvent: (MapEvent event) {
-                          if (event is MapEventMove && !_mapIsReady) {
-                            setState(() {
-                              _mapIsReady = true;
-                            });
-                            if (currentLocation != null) {
-                              _mapController.move(currentLocation!, 13.0);
-                            }
-                          }
+                        onMapReady: () {
+                          setState(() {
+                            _mapIsReady = true;
+                          });
                         },
                       ),
                       children: [
@@ -711,38 +709,53 @@ class _HomeScreenState extends State<HomeScreen> {
               borderRadius: BorderRadius.circular(15),
               border: Border.all(color: Colors.blue.withOpacity(0.2)),
             ),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.blue,
-                    borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const FamilyScreen()),
+                );
+              },
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.group,
+                      color: Colors.white,
+                      size: 24,
+                    ),
                   ),
-                  child: const Icon(Icons.group, color: Colors.white, size: 24),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Family Tracking',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.blue,
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Family Tracking',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.blue,
+                          ),
                         ),
-                      ),
-                      Text(
-                        'Active - All members safe',
-                        style: TextStyle(fontSize: 14, color: Colors.blueGrey),
-                      ),
-                    ],
+                        Text(
+                          'View all family members and their safety status',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.blueGrey,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const Icon(Icons.check_circle, color: Colors.green, size: 24),
-              ],
+                  const Icon(Icons.chevron_right, color: Colors.blue, size: 24),
+                ],
+              ),
             ),
           ),
         ],
