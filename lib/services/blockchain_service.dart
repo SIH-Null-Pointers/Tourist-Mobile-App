@@ -5,8 +5,6 @@ import 'package:web3dart/web3dart.dart';
 import 'package:http/http.dart' as http;
 import 'package:encrypt/encrypt.dart' as encrypt_pkg;
 import 'package:crypto/crypto.dart';
-import 'dart:typed_data';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class BlockchainService {
   static final BlockchainService _instance = BlockchainService._internal();

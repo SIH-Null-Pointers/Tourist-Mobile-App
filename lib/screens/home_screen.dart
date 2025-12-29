@@ -1,4 +1,5 @@
-// lib/screens/home_screen.dart (updated)
+// lib/screens/home_screen.dart (final fixed version)
+
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -23,11 +24,9 @@ class _HomeScreenState extends State<HomeScreen> {
   double safetyScore = 85.0;
   String alertStatus = 'Safe';
   bool _isPanicActive = false;
-  final Random random = Random();
   Timer? _timer;
   Timer? _locationTimer;
   Timer? _firestoreLocationTimer;
-  Timer? _safetyTimer;
   LatLng? currentLocation;
   final Location _locationService = Location();
   final MapController _mapController = MapController();
@@ -43,12 +42,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadSafeZones();
     _checkPanicStatus();
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (mounted) {
-        _updateSafetyStatus();
-      }
+      if (mounted) _updateSafetyStatus();
     });
-
-    // Get initial location and start updates
     _initializeLocation();
   }
 
@@ -63,60 +58,37 @@ class _HomeScreenState extends State<HomeScreen> {
             final data = doc.data();
             return {
               'id': doc.id,
-              'lat': data['lat'] ?? 0.0,
-              'lng': data['lng'] ?? 0.0,
-              'radius': data['radius'] ?? 100.0,
+              'lat': (data['lat'] as num?)?.toDouble() ?? 0.0,
+              'lng': (data['lng'] as num?)?.toDouble() ?? 0.0,
+              'radius': (data['radius'] as num?)?.toDouble() ?? 500.0,
             };
           }).toList();
         });
-        print('Loaded ${safeZones.length} safe zones');
       }
     } catch (e) {
-      debugPrint('Error loading safe zones: $e');
-      if (mounted) {
-        setState(() {
-          safeZones = [];
-        });
-      }
+      if (mounted) setState(() => safeZones = []);
     }
   }
 
   Future<void> _initializeLocation() async {
     try {
-      print('Initializing location...');
-
-      // Request permissions and service
       bool serviceEnabled = await _locationService.serviceEnabled();
-      if (!serviceEnabled) {
+      if (!serviceEnabled)
         serviceEnabled = await _locationService.requestService();
-        if (!serviceEnabled) {
-          print('Location service not enabled');
-          _handleLocationFailure();
-          return;
-        }
+      if (!serviceEnabled) return _handleLocationFailure();
+
+      PermissionStatus permission = await _locationService.hasPermission();
+      if (permission == PermissionStatus.denied) {
+        permission = await _locationService.requestPermission();
+        if (permission != PermissionStatus.granted)
+          return _handleLocationFailure();
       }
 
-      PermissionStatus permissionGranted = await _locationService
-          .hasPermission();
-      if (permissionGranted == PermissionStatus.denied) {
-        permissionGranted = await _locationService.requestPermission();
-        if (permissionGranted != PermissionStatus.granted) {
-          print('Location permission denied');
-          _handleLocationFailure();
-          return;
-        }
-      }
-
-      // Get location
-      print('Getting initial location...');
       final locationData = await _locationService.getLocation();
-
-      if (!mounted) return;
-
       final lat = locationData.latitude ?? 20.5937;
       final lng = locationData.longitude ?? 78.9629;
 
-      print('Location obtained: $lat, $lng');
+      if (!mounted) return;
 
       setState(() {
         currentLocation = LatLng(lat, lng);
@@ -124,85 +96,58 @@ class _HomeScreenState extends State<HomeScreen> {
         _locationInitialized = true;
       });
 
-      // Initial database update
       await _updateUserLocation();
-
-      // Store initial location in Firestore
       await _storeLocationInFirestore();
-
-      // Update safety status
       _updateSafetyStatus();
 
-      // Start location updates after initial load
       _startLocationUpdates();
       _startFirestoreLocationStorage();
     } catch (e) {
-      print('Location initialization error: $e');
       _handleLocationFailure();
     }
   }
 
   void _handleLocationFailure() {
     if (!mounted) return;
-
     setState(() {
-      currentLocation = const LatLng(20.5937, 78.9629); // India default
+      currentLocation = const LatLng(20.5937, 78.9629);
       _isLoading = false;
       _locationInitialized = true;
     });
 
-    // Still update database with fallback location
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _updateUserLocation();
-      _storeLocationInFirestore();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _updateUserLocation();
+      await _storeLocationInFirestore();
       _updateSafetyStatus();
-
-      // Start location updates even with fallback
       _startLocationUpdates();
       _startFirestoreLocationStorage();
     });
   }
 
   void _startLocationUpdates() {
-    // Cancel existing timer if any
     _locationTimer?.cancel();
-
-    // Update location every 10 seconds (for real-time database)
-    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
-      _updateUserLocation();
-    });
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _updateUserLocation(),
+    );
   }
 
   void _startFirestoreLocationStorage() {
-    // Cancel existing timer if any
     _firestoreLocationTimer?.cancel();
-
-    // Store location in Firestore every 30 minutes
-    _firestoreLocationTimer = Timer.periodic(const Duration(minutes: 30), (
-      timer,
-    ) {
-      _storeLocationInFirestore();
-    });
+    _firestoreLocationTimer = Timer.periodic(
+      const Duration(minutes: 30),
+      (_) => _storeLocationInFirestore(),
+    );
   }
 
   Future<void> _updateUserLocation() async {
     try {
-      bool serviceEnabled = await _locationService.serviceEnabled();
-      if (!serviceEnabled) return;
-
-      PermissionStatus permissionGranted = await _locationService
-          .hasPermission();
-      if (permissionGranted != PermissionStatus.granted) return;
-
       final locationData = await _locationService.getLocation();
       final newLocation = LatLng(
         locationData.latitude ?? currentLocation?.latitude ?? 20.5937,
         locationData.longitude ?? currentLocation?.longitude ?? 78.9629,
       );
 
-      if (!mounted) return;
-
-      // Update UI only if location changed significantly
       if (currentLocation != null) {
         final distance = _calculateDistance(
           currentLocation!.latitude,
@@ -210,24 +155,18 @@ class _HomeScreenState extends State<HomeScreen> {
           newLocation.latitude,
           newLocation.longitude,
         );
-
         if (distance > 10) {
-          // Only update if moved more than 10 meters
-          setState(() {
-            currentLocation = newLocation;
-          });
-
-          if (_mapIsReady) {
-            _mapController.move(newLocation, 13.0);
-          }
+          setState(() => currentLocation = newLocation);
+          if (_mapIsReady) _mapController.move(newLocation, 13.0);
         }
       } else {
-        setState(() {
-          currentLocation = newLocation;
-        });
+        setState(() => currentLocation = newLocation);
       }
 
-      // Always update real-time database (every 10 seconds)
+      // First update safety score based on new location
+      _updateSafetyStatus();
+
+      // Then push to Realtime Database with latest safetyScore
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
         await FirebaseDatabase.instance.ref('users/${user.uid}').update({
@@ -237,89 +176,18 @@ class _HomeScreenState extends State<HomeScreen> {
           'safetyScore': safetyScore,
           'status': alertStatus,
         });
-
         print(
-          'Real-time location updated: ${newLocation.latitude}, ${newLocation.longitude}',
+          'RTDB updated: lat=${newLocation.latitude}, lng=${newLocation.longitude}, score=$safetyScore',
         );
       }
-
-      // Update safety status
-      _updateSafetyStatus();
     } catch (e) {
-      print('Location update error: $e');
-    }
-  }
-
-  void _updateSafetyStatus() {
-    if (currentLocation == null || safeZones.isEmpty) return;
-
-    double nearestDist = double.infinity;
-    bool inSafeZone = false;
-
-    // Check if user is in any safe zone
-    for (var zone in safeZones) {
-      final lat = zone['lat']?.toDouble() ?? 0.0;
-      final lng = zone['lng']?.toDouble() ?? 0.0;
-      final radius = zone['radius']?.toDouble() ?? 100.0;
-
-      final dist = _calculateDistance(
-        currentLocation!.latitude,
-        currentLocation!.longitude,
-        lat,
-        lng,
-      );
-
-      if (dist <= radius) {
-        inSafeZone = true;
-        break;
-      }
-
-      // Track nearest safe zone
-      if (dist < nearestDist) {
-        nearestDist = dist;
-      }
-    }
-
-    double score;
-    String status;
-
-    if (inSafeZone) {
-      score = 100.0;
-      status = 'Safe';
-    } else if (nearestDist == double.infinity) {
-      score = 0.0;
-      status = 'No Safe Zones Nearby';
-    } else {
-      // Calculate safety score based on distance to nearest safe zone
-      const double maxDist = 5000.0; // 5km maximum distance
-      score = ((maxDist - nearestDist) / maxDist * 100).clamp(0.0, 100.0);
-
-      if (nearestDist < 200) {
-        status = 'Safe';
-      } else if (nearestDist < 500) {
-        status = 'Moderate';
-      } else if (nearestDist < 1000) {
-        status = 'Caution';
-      } else {
-        status = 'Danger - Reach Safe Zone';
-        score = score.clamp(0.0, 20.0);
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        safetyScore = score;
-        alertStatus = status;
-      });
+      debugPrint('Location update error: $e');
     }
   }
 
   Future<void> _storeLocationInFirestore() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null || currentLocation == null) return;
-
-      // Store location history in Firestore every 30 minutes
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && currentLocation != null) {
       await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -328,18 +196,11 @@ class _HomeScreenState extends State<HomeScreen> {
             'latitude': currentLocation!.latitude,
             'longitude': currentLocation!.longitude,
             'timestamp': FieldValue.serverTimestamp(),
-            'safetyScore': safetyScore,
-            'status': alertStatus,
-            'createdAt': DateTime.now().toIso8601String(),
           });
-
-      print(
-        'Location stored in Firestore: ${currentLocation!.latitude}, ${currentLocation!.longitude}',
-      );
-    } catch (e) {
-      print('Firestore location storage error: $e');
     }
   }
+
+  double _degreesToRadians(double degrees) => degrees * pi / 180;
 
   double _calculateDistance(
     double lat1,
@@ -347,52 +208,78 @@ class _HomeScreenState extends State<HomeScreen> {
     double lat2,
     double lon2,
   ) {
-    const R = 6371000; // Earth's radius in meters
-    final phi1 = _deg2rad(lat1);
-    final phi2 = _deg2rad(lat2);
-    final deltaPhi = _deg2rad(lat2 - lat1);
-    final deltaLambda = _deg2rad(lon2 - lon1);
-
+    const earthRadius = 6371000; // meters
+    final dLat = _degreesToRadians(lat2 - lat1);
+    final dLon = _degreesToRadians(lon2 - lon1);
     final a =
-        sin(deltaPhi / 2) * sin(deltaPhi / 2) +
-        cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2);
+        sin(dLat / 2) * sin(dLat / 2) +
+        cos(_degreesToRadians(lat1)) *
+            cos(_degreesToRadians(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    return R * c;
+    return earthRadius * c;
   }
 
-  double _deg2rad(double degrees) {
-    return degrees * pi / 180;
+  void _updateSafetyStatus() {
+    if (currentLocation == null) return;
+
+    if (safeZones.isEmpty) {
+      safetyScore = 0.0;
+    } else {
+      double minDistance = double.infinity;
+      double nearestRadius = 500.0;
+
+      for (var zone in safeZones) {
+        final double zoneLat = zone['lat'] as double;
+        final double zoneLng = zone['lng'] as double;
+        final double zoneRadius = zone['radius'] as double;
+
+        final dist = _calculateDistance(
+          currentLocation!.latitude,
+          currentLocation!.longitude,
+          zoneLat,
+          zoneLng,
+        );
+
+        if (dist < minDistance) {
+          minDistance = dist;
+          nearestRadius = zoneRadius;
+        }
+      }
+
+      safetyScore = minDistance > nearestRadius
+          ? 0.0
+          : 100 * (1 - minDistance / nearestRadius);
+    }
+
+    alertStatus = safetyScore > 50 ? 'Safe' : 'Alert';
+
+    if (mounted) setState(() {});
+
+    // Update safetyScore in Firestore user document
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .update({'safetyScore': safetyScore})
+          .catchError((e) => debugPrint('Firestore update error: $e'));
+    }
   }
 
   Future<void> _checkPanicStatus() async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      print('No authenticated user found');
-      return;
-    }
+    if (user == null) return;
 
-    print('Checking panic status for user: ${user.uid}');
-
-    try {
-      final snapshot = await FirebaseDatabase.instance
-          .ref('panic_alerts/${user.uid}')
-          .get();
-
-      print('Panic snapshot exists: ${snapshot.exists}');
-
-      if (snapshot.exists) {
-        final data = snapshot.value as Map<dynamic, dynamic>?;
-        if (data != null && data['alertActive'] == true) {
-          if (mounted) {
-            setState(() {
-              _isPanicActive = true;
-            });
-          }
-        }
-      }
-    } catch (e) {
-      print('Error checking panic status: $e');
-    }
+    _panicListener = FirebaseDatabase.instance
+        .ref('panic_alerts/${user.uid}')
+        .onValue
+        .listen((event) {
+          final data = event.snapshot.value as Map<dynamic, dynamic>?;
+          final active = data?['alertActive'] == true;
+          if (mounted) setState(() => _isPanicActive = active);
+        });
   }
 
   @override
@@ -406,237 +293,108 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading || !_locationInitialized) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Tourist Safety'),
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
-          elevation: 0,
-        ),
-        body: const Center(child: CircularProgressIndicator()),
-      );
+    if (_isLoading || currentLocation == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Tourist Safety',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: Colors.blue[800],
-        foregroundColor: Colors.white,
-        elevation: 0,
-        centerTitle: true,
-      ),
-      body: Column(
+      body: Stack(
         children: [
-          // Safety Status Card
-          Container(
-            margin: const EdgeInsets.all(16),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.3),
-                  blurRadius: 15,
-                  offset: const Offset(0, 5),
-                ),
-              ],
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: currentLocation!,
+              initialZoom: 13.0,
+              onMapReady: () => _mapIsReady = true,
             ),
-            child: Column(
-              children: [
-                Row(
+            children: [
+              TileLayer(
+                urlTemplate:
+                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c'],
+              ),
+              CircleLayer(
+                circles: safeZones.map((zone) {
+                  return CircleMarker(
+                    point: LatLng(zone['lat'] as double, zone['lng'] as double),
+                    radius: zone['radius'] as double,
+                    useRadiusInMeter: true,
+                    color: Colors.green.withOpacity(0.3),
+                    borderColor: Colors.green,
+                    borderStrokeWidth: 2,
+                  );
+                }).toList(),
+              ),
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: currentLocation!,
+                    width: 50,
+                    height: 50,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: _isPanicActive
+                            ? Colors.red.withOpacity(0.3)
+                            : Colors.blue.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.location_on,
+                        color: _isPanicActive ? Colors.red : Colors.red,
+                        size: 30,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          Positioned(
+            top: 50,
+            left: 16,
+            right: 16,
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      'Safety Score',
-                      style: TextStyle(
+                    Text(
+                      'Safety Score: ${safetyScore.toStringAsFixed(0)}%',
+                      style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: safetyScore > 80
+                    Text(
+                      alertStatus,
+                      style: TextStyle(
+                        fontSize: 18,
+                        color: alertStatus == 'Safe'
                             ? Colors.green
-                            : safetyScore > 60
-                            ? Colors.orange
                             : Colors.red,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        alertStatus,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
-                LinearProgressIndicator(
-                  value: safetyScore / 100,
-                  backgroundColor: Colors.grey[300],
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    safetyScore > 80
-                        ? Colors.green
-                        : safetyScore > 60
-                        ? Colors.orange
-                        : Colors.red,
-                  ),
-                  borderRadius: BorderRadius.circular(10),
-                  minHeight: 10,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${safetyScore.toStringAsFixed(0)}%',
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-
-          // Map Section
-          Expanded(
-            child: Stack(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 16),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.3),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: FlutterMap(
-                      mapController: _mapController,
-                      options: MapOptions(
-                        initialCenter: currentLocation!,
-                        initialZoom: 13.0,
-                        onMapReady: () {
-                          setState(() {
-                            _mapIsReady = true;
-                          });
-                        },
-                      ),
-                      children: [
-                        TileLayer(
-                          urlTemplate:
-                              'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          subdomains: const ['a', 'b', 'c'],
-                          userAgentPackageName:
-                              'com.example.tourist_safety_app',
-                        ),
-                        // Safe zones bubbles - sized to cover radius
-                        MarkerLayer(
-                          markers: safeZones.map((zone) {
-                            final lat = zone['lat']?.toDouble() ?? 0.0;
-                            final lng = zone['lng']?.toDouble() ?? 0.0;
-                            final radius = zone['radius']?.toDouble() ?? 100.0;
-
-                            // Calculate pixel size based on radius (1 meter ≈ 0.000009 degrees)
-                            // Convert radius to degrees and then to pixels
-                            final double radiusInDegrees = radius * 0.000009;
-                            final double pixelSize =
-                                radiusInDegrees *
-                                100000; // Scale factor for visibility
-
-                            return Marker(
-                              point: LatLng(lat, lng),
-                              width: pixelSize.clamp(
-                                40.0,
-                                300.0,
-                              ), // Clamp between 40-300 pixels
-                              height: pixelSize.clamp(40.0, 300.0),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.green.withOpacity(0.3),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: Colors.green,
-                                    width: 2,
-                                  ),
-                                ),
-                                child: Center(
-                                  child: Container(
-                                    width: 30,
-                                    height: 30,
-                                    decoration: const BoxDecoration(
-                                      color: Colors.green,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: const Icon(
-                                      Icons.safety_check,
-                                      color: Colors.white,
-                                      size: 16,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                        MarkerLayer(
-                          markers: [
-                            Marker(
-                              point: currentLocation!,
-                              width: 50,
-                              height: 50,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: _isPanicActive
-                                      ? Colors.red.withOpacity(0.3)
-                                      : Colors.blue.withOpacity(0.2),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  Icons.location_on,
-                                  color: _isPanicActive
-                                      ? Colors.red
-                                      : Colors.red,
-                                  size: 30,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                Positioned(
-                  bottom: 16,
-                  right: 32,
-                  child: FloatingActionButton(
-                    onPressed: _updateUserLocation,
-                    mini: true,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.my_location, color: Colors.blue[800]),
-                  ),
-                ),
-              ],
+          Positioned(
+            bottom: 16,
+            right: 32,
+            child: FloatingActionButton(
+              mini: true,
+              backgroundColor: Colors.white,
+              onPressed: _updateUserLocation,
+              child: Icon(Icons.my_location, color: Colors.blue[800]),
             ),
           ),
-
-          // Action Buttons
+        ],
+      ),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
           Container(
             margin: const EdgeInsets.all(16),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -668,13 +426,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _isPanicActive ? Colors.grey : Colors.red,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
                   ),
                 ),
                 ElevatedButton.icon(
@@ -687,20 +438,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.blue[800],
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
                   ),
                 ),
               ],
             ),
           ),
-
-          // Family Tracking Card
           Container(
             margin: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
             padding: const EdgeInsets.all(16),
@@ -710,12 +452,10 @@ class _HomeScreenState extends State<HomeScreen> {
               border: Border.all(color: Colors.blue.withOpacity(0.2)),
             ),
             child: InkWell(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const FamilyScreen()),
-                );
-              },
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const FamilyScreen()),
+              ),
               child: Row(
                 children: [
                   Container(
